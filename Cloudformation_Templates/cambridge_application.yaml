@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cloudformation Template for application tier
+Resources:
+  ALBSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: "SG for Application Load Balancer"
+      VpcId: !ImportValue Cambridge-NetworkTier-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          ToPort: 80
+          FromPort: 80
+          CidrIp: 122.55.14.126/32
+          Description: "Allow access only to Cambridge provided ip"   
+      Tags:
+        - Key: Name
+          Value: ApplicationTier-ALB-SG
+  AppInstanceSshAccessSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    DependsOn: ALBSG
+    Properties:
+      GroupDescription: "Handles SSH Access"
+      VpcId: !ImportValue Cambridge-NetworkTier-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          ToPort: 22
+          FromPort: 22
+          SourceSecurityGroupId: !ImportValue Cambridge-NetworkTier-BastionHostSG
+          Description: "Allow access only to the bastion public ip "   
+      Tags:
+        - Key: Name
+          Value: ApplicaitonTier-SSH-Access-SG
+  AppInstanceDefaultSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    DependsOn: ALBSG
+    Properties:
+      GroupDescription: "Handles access other than SSH"
+      VpcId: !ImportValue Cambridge-NetworkTier-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          ToPort: 80
+          FromPort: 80
+          SourceSecurityGroupId: !Ref ALBSG
+          Description: "Allow access only to Cambridge provided ip"   
+      Tags:
+        - Key: Name
+          Value: ApplicationTier-Main-SG
+  TG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue Cambridge-NetworkTier-VPCID
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups: 
+        - !Ref ALBSG
+      Subnets:
+        - !ImportValue Cambridge-NetworkTier-PublicSubnet1ID
+        - !ImportValue Cambridge-NetworkTier-PublicSubnet2ID
+  ALBHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: 
+    - ALB
+    - TG
+    Properties:
+      Port: 80
+      Protocol: "HTTP"
+      LoadBalancerArn: !Ref ALB
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TG
+          Order: 1
+  # Launch Template and ASG was included in this exam as part of improvement
+  # This would also handle the self healing part of the application
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: ami-06202e06492f46177 # Amazon Linux 2 AMI (HVM) (64-bit x86)
+        InstanceType: t2.micro
+        KeyName: cambridge-keypair
+        SecurityGroupIds:
+          - !Ref AppInstanceDefaultSG
+          - !Ref AppInstanceSshAccessSG
+        UserData: 
+          Fn::Base64:
+            Fn::Join:
+            - ''
+            - - '#!/bin/bash -xe
+
+                '
+              - 'yum -y update;
+              
+                '
+              - 'yum install -y httpd;
+              
+                '
+              - 'curl http://169.254.169.254/latest/meta-data/hostname > /var/www/html/index.html
+              
+                '
+              - 'systemctl start httpd;
+                
+                '
+              - 'systemctl enable httpd;'
+  ASG: 
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+    - TG
+    - LaunchTemplate
+    Properties:
+      MinSize: '2'
+      MaxSize: '2'
+      DesiredCapacity: '2'
+      TargetGroupARNs:
+        - !Ref TG
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier: # Deploy an equal count of instance in both the private subnets
+        - !ImportValue Cambridge-NetworkTier-PrivateSubnet1ID
+        - !ImportValue Cambridge-NetworkTier-PrivateSubnet2ID
+

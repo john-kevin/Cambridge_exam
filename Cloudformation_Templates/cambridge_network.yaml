@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cloudformation Template for the network tier which includes VPC, 2 private and 2 public subnets, private and public routetables, as well as the bastion host / jump box
+Parameters:
+  VpcMainCidr:
+    Description: CIDR Range for the VPC
+    Type: String
+    Default: 10.0.0.0/16
+  PrivateSubnet1Cidr:
+    Description: CIDR Range for Private Subnet 1
+    Type: String
+    Default: 10.0.10.0/24
+  PrivateSubnet2Cidr:
+    Description: CIDR Range for Private Subnet 2
+    Type: String
+    Default: 10.0.20.0/24
+  PublicSubnet1Cidr:
+    Description: CIDR Range for Public Subnet 1
+    Type: String
+    Default: 10.0.30.0/24
+  PublicSubnet2Cidr:
+    Description: CIDR Range for Public Subnet 2
+    Type: String
+    Default: 10.0.40.0/24
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcMainCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+       - Key: Name
+         Value: Cambridge
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Cambridge_IGW
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+    - VPC
+    - IGW
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: "ap-southeast-2a"
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1 aps2a
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true 
+      AvailabilityZone: "ap-southeast-2b"   
+      Tags:
+        - Key: Name
+          Value:  Public Subnet 2 aps2b
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: "ap-southeast-2a"   
+      Tags:
+        - Key: Name
+          Value:  Private Subnet 1 aps2a
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: "ap-southeast-2b"   
+      Tags:
+        - Key: Name
+          Value:  Private Subnet 2 aps2b
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public RT - Cambridge
+  PublicRouteToInternet: # Allow traffic to and from the internet
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW      
+  PublicSubnet1RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PublicRouteTable
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PublicRouteTable
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: 
+    - NatGatewayEIP
+    - PublicSubnet1
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private RT - Cambridge
+  PrivateRouteToInternet: # Allow outbound traffic to the internet
+    Type: AWS::EC2::Route
+    DependsOn: NatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnet1RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PrivateRouteTable
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnet2RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PrivateRouteTable
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: Open Port 22 for ssh
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: 122.55.14.126/32
+          Description: "Allow SSH Access to bastion host from cambridge provided ip"   
+      Tags:
+        - Key: Name
+          Value: NetworkTier-SG-BastionHost
+  BastionHost:
+    Type: AWS::EC2::Instance
+    DependsOn: PublicSubnet2
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-06202e06492f46177 # Amazon Linux 2 AMI (HVM) (64-bit x86)
+      Tags:
+        - Key: Name
+          Value: "Cambridge Bastion Host"
+      KeyName: cambridge-keypair # Manually created since keypair cannot be created via CF
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet:
+            - Ref: "SG"
+          SubnetId:
+            Ref: "PublicSubnet2"
+Outputs:
+  BastionHostSG:
+    Description: Bastion Host SG
+    Value: !GetAtt SG.GroupId
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-BastionHostSG'
+  VPCID:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-VPCID'
+  PrivateSubnet1ID:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-PrivateSubnet1ID'
+  PrivateSubnet2ID:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-PrivateSubnet2ID'
+  PublicSubnet1ID:
+    Description: Public Subnet 1 ID
+    Value: !Ref PublicSubnet1
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-PublicSubnet1ID'
+  PublicSubnet2ID:
+    Description: Public Subnet 2 ID
+    Value: !Ref PublicSubnet2
+    Export:   
+      Name: 
+        'Fn::Sub': '${AWS::StackName}-PublicSubnet2ID'
